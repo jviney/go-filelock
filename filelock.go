@@ -22,12 +22,24 @@ const (
   LockReleased
 )
 
-func Obtain(path string, timeout time.Duration) *Lock {
-  lock := Lock{path: path, timeout: timeout}
-  timeoutChan := time.After(lock.timeout)
+func Obtain(path string, timeout time.Duration) (lock *Lock) {
+  lock = &Lock{path: path, timeout: timeout}
 
-  flockChan := make(chan bool, 1)
-  go func() { flockChan <- lock.flock() }()
+  // Try to open the lock file
+  file, err := os.OpenFile(lock.path, os.O_RDWR | os.O_CREATE, 0660)
+
+  if err != nil {
+    lock.Error = err
+    lock.State = LockError
+    return
+  }
+
+  // Create channels for the timeout and receiving the flock result
+  timeoutChan := time.After(lock.timeout)
+  flockChan := make(chan error, 1)
+
+  // Start the blocking lock call in a goroutine
+  go func() { flockChan <- flock(file) }()
 
   select {
     case <- timeoutChan:
@@ -38,19 +50,22 @@ func Obtain(path string, timeout time.Duration) *Lock {
       // and will eventually return at some point in the future.
       // If the lock is eventually obtained, it needs to be released.
       go func() {
-        if <- flockChan {
-          lock.releaseFlock()
+        if err := <- flockChan; err == nil {
+          releaseFlock(file)
         }
       }()
 
-    case success := <- flockChan:
-      if success {
+    case err := <- flockChan:
+      if err == nil {
         lock.State = LockSuccess
+        lock.file = file
       } else {
         lock.State = LockError
+        lock.Error = err
       }
   }
-  return &lock
+
+  return
 }
 
 func (l *Lock) IsLocked() bool {
@@ -59,32 +74,17 @@ func (l *Lock) IsLocked() bool {
 
 func (l *Lock) Release() {
   if l.State == LockSuccess {
-    l.releaseFlock()
+    releaseFlock(l.file)
+    l.file.Close()
+    l.file = nil
     l.State = LockReleased
   }
 }
 
-func (l *Lock) flock() bool {
-  file, err := os.OpenFile(l.path, os.O_RDWR | os.O_CREATE, 0660)
-
-  if err != nil {
-    l.Error = err
-    return false
-  }
-
-  if err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
-    l.Error = err
-    return false
-  } else {
-    l.file = file
-    return true
-  }
+func flock(file *os.File) error {
+  return syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
 }
 
-func (l *Lock) releaseFlock() {
-  if l.file != nil {
-    syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
-    l.file.Close()
-    l.file = nil
-  } 
+func releaseFlock(file *os.File) {
+  syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 }

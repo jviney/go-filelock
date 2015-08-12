@@ -28,7 +28,7 @@ func TestObtainAndReleaseLockConcurrent(t *testing.T) {
   wg.Add(count)
 
   startTime := time.Now()
-  lockTime := time.Nanosecond * 1e6 * 5 // 5ms
+  lockTime := time.Millisecond * 5
 
   for i := 0; i < count; i++ {
     go func() {
@@ -65,7 +65,7 @@ func TestObtainLockTimeout(t *testing.T) {
 
   defer l.Release()
 
-  if l2 := Obtain(".test2.lock", time.Nanosecond * 1e6 * 10); l2.State != LockTimeout {
+  if l2 := Obtain(".test2.lock", time.Millisecond * 10); l2.State != LockTimeout {
     t.Error()
   }
 }
@@ -77,7 +77,7 @@ func TestObtainLockTimeoutReleasesEventuallyObtainedLock(t *testing.T) {
     t.Error()
   }
 
-  l2 := Obtain(".test3.lock", time.Nanosecond * 1e6 * 10)
+  l2 := Obtain(".test3.lock", time.Millisecond * 10)
 
   if l2.State != LockTimeout {
     t.Error()
@@ -92,7 +92,7 @@ func TestObtainLockTimeoutReleasesEventuallyObtainedLock(t *testing.T) {
   // the second lock timed out and should have been released
   // as soon as it was obtained by the still-blocking goroutine,
   // a new lock should succeed.
-  l3 := Obtain(".test3.lock", time.Nanosecond * 1e6 * 10)
+  l3 := Obtain(".test3.lock", time.Millisecond * 10)
 
   if l3.State != LockSuccess {
     t.Error()
