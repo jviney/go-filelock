@@ -2,30 +2,24 @@
 
 ## Overview
 
-Exclusive file locks with timeouts.
+Exclusive file locks with timeouts using `flock`.
 
 ## Example
 
 ```
-  // Try to obtain an exclusive lock with a short timeout
-  lock := filelock.Obtain("example.lock", time.Second * 1)
+  // Try to obtain an exclusive file lock with a timeout
+  lock := filelock.FileLock{Path: "example.lock", Timeout: time.Second * 1}
+  err := lock.Lock()
+  if err != nil {
+    if err == ErrLockTimeout {
+      // Lock timeout
+    }
 
-  // Lock obtained successfully.
-  // Must be released.
-  if lock.IsLocked() {
-    // code here ...
-    lock.Release()
+    // Other error
   }
 
-  // Unable to get the lock before the specified timeout.
-  if lock.State == filelock.LockTimeout {
-    log.Printf("lock timeout")
-  }
-
-  // An error occurred
-  if lock.State == filelock.LockError {
-    log.Printf(lock.Error.Error())
-  }
+  // Lock obtained successfully, must be released.
+  defer lock.Unlock()
 ```
 
 See tests for more examples.

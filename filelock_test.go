@@ -1,108 +1,118 @@
 package filelock
 
 import (
-  "sync"
-  "testing"
-  "time"
+	"sync"
+	"testing"
+	"time"
 )
 
 func TestRepeatedObtainAndReleaseLock(t *testing.T) {
-  count := 100
+	count := 100
 
-  for i := 0; i < count; i++ {
-    l := Obtain("test.lock", time.Second * 1)
+	for i := 0; i < count; i++ {
+		lock := FileLock{Path: "/tmp/.test.lock", Timeout: time.Second * 1}
+		err := lock.Lock()
+		if err != nil {
+			t.Error()
+		}
 
-    if l.State != LockSuccess {
-      t.Error()
-    }
-
-    if l.Release(); l.State != LockReleased {
-      t.Error()
-    }
-  }  
+		if err = lock.Unlock(); err != nil {
+			t.Error()
+		}
+	}
 }
 
 func TestObtainAndReleaseLockConcurrent(t *testing.T) {
-  count := 50
-  var wg sync.WaitGroup
-  wg.Add(count)
+	count := 50
+	var wg sync.WaitGroup
+	wg.Add(count)
 
-  startTime := time.Now()
-  lockTime := time.Millisecond * 5
+	startTime := time.Now()
+	lockTime := time.Millisecond * 5
 
-  for i := 0; i < count; i++ {
-    go func() {
-      l := Obtain(".test1.lock", time.Second * 1)
-      if l.State != LockSuccess {
-        t.Error()
-      }
+	for i := 0; i < count; i++ {
+		go func() {
+			lock := FileLock{Path: "/tmp/.test1.lock", Timeout: time.Second * 1}
+			err := lock.Lock()
+			if err != nil {
+				t.Error()
+			}
 
-      time.Sleep(lockTime)
+			time.Sleep(lockTime)
 
-      if l.Release(); l.State != LockReleased {
-        t.Error()
-      }
+			if err = lock.Unlock(); err != nil {
+				t.Error()
+			}
 
-      wg.Done()      
-    }()
-  }
+			wg.Done()
+		}()
+	}
 
-  wg.Wait()
+	wg.Wait()
 
-  // Each goroutine held the lock for lockTime, so the
-  // test duration should be at least lockTime * count
-  duration := time.Since(startTime)
-  if int(duration / lockTime) < count {
-    t.Error()
-  }
+	// Each goroutine held the lock for lockTime, so the
+	// test duration should be at least lockTime * count
+	duration := time.Since(startTime)
+	if int(duration/lockTime) < count {
+		t.Error()
+	}
 }
 
 func TestObtainLockTimeout(t *testing.T) {
-  l := Obtain(".test2.lock", time.Second * 1)
-  if l.State != LockSuccess {
-    t.Error()
-  }
+	lock := FileLock{Path: "/tmp/.test2.lock", Timeout: time.Second * 1}
+	if err := lock.Lock(); err != nil {
+		t.Error()
+	}
 
-  defer l.Release()
+	defer lock.Unlock()
 
-  if l2 := Obtain(".test2.lock", time.Millisecond * 10); l2.State != LockTimeout {
-    t.Error()
-  }
+	lock2 := FileLock{Path: "/tmp/.test2.lock", Timeout: time.Millisecond * 10}
+	err := lock2.Lock()
+	if err != ErrLockTimeout {
+		t.Error()
+	}
 }
 
 func TestObtainLockTimeoutReleasesEventuallyObtainedLock(t *testing.T) {
-  l1 := Obtain(".test3.lock", time.Second * 1)
+	lock := FileLock{Path: "/tmp/.test3.lock", Timeout: time.Second * 1}
+	if err := lock.Lock(); err != nil {
+		t.Error()
+	}
 
-  if l1.State != LockSuccess {
-    t.Error()
-  }
+	lock2 := FileLock{Path: "/tmp/.test3.lock", Timeout: time.Millisecond * 10}
+	if err := lock2.Lock(); err != ErrLockTimeout {
+		t.Error()
+	}
 
-  l2 := Obtain(".test3.lock", time.Millisecond * 10)
+	// Release the first lock, this causes the
+	// second lock to be obtained by the blocking goroutine,
+	// and then be released straight away.
+	if err := lock.Unlock(); err != nil {
+		t.Error()
+	}
 
-  if l2.State != LockTimeout {
-    t.Error()
-  }
-
-  // Release the first lock, this causes the
-  // second lock to be obtained by the blocking goroutine,
-  // and then be released straight away.  
-  l1.Release()
-
-  // Given that the first lock has been released, and
-  // the second lock timed out and should have been released
-  // as soon as it was obtained by the still-blocking goroutine,
-  // a new lock should succeed.
-  l3 := Obtain(".test3.lock", time.Millisecond * 10)
-
-  if l3.State != LockSuccess {
-    t.Error()
-  }
+	// Given that the first lock has been released, and
+	// the second lock timed out and should have been released
+	// as soon as it was obtained by the still-blocking goroutine,
+	// a new lock should succeed.
+	lock3 := FileLock{Path: "/tmp/.test3.lock", Timeout: time.Millisecond * 10}
+	if err := lock3.Lock(); err != nil {
+		t.Error()
+	}
+	lock3.Unlock()
 }
 
 func TestLockFilePermissionDenied(t *testing.T) {
-  l := Obtain("/.test.lock", time.Second * 1)
+	lock := FileLock{Path: "/.test.lock", Timeout: time.Second * 1}
+	if err := lock.Lock(); err == nil {
+		t.Error()
+	}
+}
 
-  if l.State != LockError {
-    t.Error()
-  }
+func TestUnlockWhenNotLocked(t *testing.T) {
+	lock := FileLock{Path: "/tmp/test.lock", Timeout: time.Second * 1}
+	err := lock.Unlock()
+	if err != ErrNotLocked {
+		t.Error()
+	}
 }

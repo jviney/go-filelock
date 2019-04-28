@@ -1,90 +1,87 @@
 package filelock
 
 import (
-  "os"
-  "time"
-  "syscall"
+	"errors"
+	"os"
+	"syscall"
+	"time"
 )
 
-type Lock struct {
-  State int
-  Error error
+var ErrLockTimeout = errors.New("timeout obtaining lock")
+var ErrNotLocked = errors.New("not locked")
 
-  timeout time.Duration
-  path string
-  file *os.File
+type FileLock struct {
+	Path    string
+	Timeout time.Duration
+
+	file *os.File // open file holding the lock
 }
 
-const (
-  LockSuccess int = 1 << iota
-  LockError
-  LockTimeout
-  LockReleased
-)
+func (l *FileLock) Lock() error {
+	// Try to open the lock file
+	file, err := os.OpenFile(l.Path, os.O_RDWR|os.O_CREATE, 0660)
+	if err != nil {
+		return err
+	}
 
-func Obtain(path string, timeout time.Duration) (lock *Lock) {
-  lock = &Lock{path: path, timeout: timeout}
+	// Create channels for the timeout and receiving the flock result
+	timeoutChan := time.After(l.Timeout)
+	flockChan := make(chan error, 1)
 
-  // Try to open the lock file
-  file, err := os.OpenFile(lock.path, os.O_RDWR | os.O_CREATE, 0660)
+	// Start the blocking flock call in a goroutine
+	go func() { flockChan <- flock(file) }()
 
-  if err != nil {
-    lock.Error = err
-    lock.State = LockError
-    return
-  }
+	select {
+	case <-timeoutChan:
+		// We hit the timeout without successfully getting the lock.
+		// The goroutine blocked on syscall.Flock() is still running
+		// and will eventually return at some point in the future.
+		// When the lock is eventually obtained, it needs to be immediately
+		// released.
+		go func() {
+			if err := <-flockChan; err == nil {
+				releaseFlock(file)
+				l.file = nil
+			}
+		}()
 
-  // Create channels for the timeout and receiving the flock result
-  timeoutChan := time.After(lock.timeout)
-  flockChan := make(chan error, 1)
+		l.file = nil
+		return ErrLockTimeout
 
-  // Start the blocking lock call in a goroutine
-  go func() { flockChan <- flock(file) }()
+	case err := <-flockChan:
+		if err != nil {
+			return err
+		}
 
-  select {
-    case <- timeoutChan:
-      lock.State = LockTimeout
-
-      // We hit the timeout without successfully getting the lock.
-      // The goroutine blocked on syscall.Flock() is still running
-      // and will eventually return at some point in the future.
-      // If the lock is eventually obtained, it needs to be released.
-      go func() {
-        if err := <- flockChan; err == nil {
-          releaseFlock(file)
-        }
-      }()
-
-    case err := <- flockChan:
-      if err == nil {
-        lock.State = LockSuccess
-        lock.file = file
-      } else {
-        lock.State = LockError
-        lock.Error = err
-      }
-  }
-
-  return
+		// Store the file descriptor holding the lock
+		l.file = file
+		return nil
+	}
 }
 
-func (l *Lock) IsLocked() bool {
-  return l.State == LockSuccess
-}
+func (l *FileLock) Unlock() error {
+	if l.file == nil {
+		return ErrNotLocked
+	}
 
-func (l *Lock) Release() {
-  if l.State == LockSuccess {
-    releaseFlock(l.file)
-    l.file.Close()
-    l.file = nil
-    l.State = LockReleased
-  }
+	err := releaseFlock(l.file)
+	if err != nil {
+		return err
+	}
+
+	err = l.file.Close()
+	if err != nil {
+		return err
+	}
+
+	l.file = nil
+	return nil
 }
 
 func flock(file *os.File) error {
-  return syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
+	return syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
 }
 
-func releaseFlock(file *os.File) {
-  syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+func releaseFlock(file *os.File) error {
+	return syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 }
